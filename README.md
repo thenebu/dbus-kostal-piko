@@ -41,36 +41,26 @@ Configure via the Piko's display menu:
    ssh root@<gx-ip>
    ```
 
-2. Clone or copy the driver:
+2. Clone the driver:
    ```bash
    cd /data/etc
-   git clone https://github.com/<your-user>/dbus-kostal-piko.git
-   ```
-   Or copy via SCP:
-   ```bash
-   scp -r dbus-kostal-piko root@<gx-ip>:/data/etc/
+   git clone https://github.com/thenebu/dbus-kostal-piko.git
    ```
 
-3. Copy and edit the config:
-   ```bash
-   cd /data/etc/dbus-kostal-piko
-   cp config.sample.ini config.ini
-   nano config.ini  # adjust port, slave address, etc.
-   ```
-
-4. Download velib_python (Victron's dbus library):
-   ```bash
-   mkdir -p ext
-   cd ext
-   git clone https://github.com/victronenergy/velib_python.git
-   ```
-
-5. Run the installer:
+3. Run the installer:
    ```bash
    bash /data/etc/dbus-kostal-piko/install.sh
    ```
+   The interactive setup wizard will guide you through:
+   - Selecting the USB-RS485 adapter
+   - Setting the Modbus slave address
+   - Auto-detecting inverter name, serial number and rated power
+   - Choosing the AC position and VRM instance
 
-6. Verify:
+   The installer automatically downloads all dependencies (velib_python),
+   generates `config.ini`, and creates the service.
+
+4. Verify:
    ```bash
    svstat /service/dbus-kostal-piko
    # Should show: up (pid XXXXX) N seconds
@@ -78,6 +68,11 @@ Configure via the Piko's display menu:
    tail -f /var/log/dbus-kostal-piko/current | tai64nlocal
    # Should show: Piko: 12345W | L1: ... | L2: ... | L3: ...
    ```
+
+To re-run the setup wizard later:
+```bash
+bash /data/etc/dbus-kostal-piko/install.sh --setup
+```
 
 ## Uninstall
 
