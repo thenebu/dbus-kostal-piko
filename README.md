@@ -135,6 +135,70 @@ Reverse-engineered and verified against the Piko's HTTP API.
 
 Connection: **19200 baud, 8E1, FC03 (Holding Registers)**
 
+## Alternative: HTTP API (dxsEntries)
+
+The older Piko inverters also expose data via an HTTP JSON API on their built-in web interface. This can be useful if RS485 is not an option or for retrieving the exact total energy value.
+
+**Endpoint:** `http://<piko-ip>/api/dxs.json?dxsEntries=<id>&dxsEntries=<id>&...`
+
+### Available dxsEntries
+
+| dxsId      | Description      | Unit |
+|------------|------------------|------|
+| 33555201   | DC1 Current      | A    |
+| 33555202   | DC1 Voltage      | V    |
+| 33555203   | DC1 Power        | W    |
+| 33555457   | DC2 Current      | A    |
+| 33555458   | DC2 Voltage      | V    |
+| 33555459   | DC2 Power        | W    |
+| 33555713   | DC3 Current      | A    |
+| 33555714   | DC3 Voltage      | V    |
+| 33555715   | DC3 Power        | W    |
+| 33556736   | DC Total Power   | W    |
+| 67109120   | AC Total Power   | W    |
+| 67109377   | AC L1 Current    | A    |
+| 67109378   | AC L1 Voltage    | V    |
+| 67109379   | AC L1 Power      | W    |
+| 67109633   | AC L2 Current    | A    |
+| 67109634   | AC L2 Voltage    | V    |
+| 67109635   | AC L2 Power      | W    |
+| 67109889   | AC L3 Current    | A    |
+| 67109890   | AC L3 Voltage    | V    |
+| 67109891   | AC L3 Power      | W    |
+| 16780032   | Operating Status | enum (3=feeding) |
+| 251658753  | Total Energy     | kWh  |
+| 251659009  | Daily Energy     | kWh  |
+
+### Example Request
+
+```bash
+curl "http://192.168.2.64/api/dxs.json?dxsEntries=67109120&dxsEntries=251658753"
+```
+
+```json
+{
+  "dxsEntries": [
+    {"dxsId": 67109120, "value": 12505.64},
+    {"dxsId": 251658753, "value": 81182.39}
+  ]
+}
+```
+
+### Why this driver uses RS485 instead
+
+| | RS485 (Modbus RTU) | HTTP API (dxsEntries) |
+|---|---|---|
+| **Reliability** | Direct serial connection, no network dependency | Requires functioning Ethernet/WiFi on the Piko |
+| **Latency** | ~100ms per poll | ~500-1000ms per request |
+| **Network** | Works without LAN/IP infrastructure | Piko must be on the same network as the GX |
+| **Availability** | Always responds while inverter has power | Web server can hang, no watchdog |
+| **Firmware updates** | Protocol is stable, hardware-level | Piko firmware updates could change API |
+| **Multi-device** | RS485 bus supports multiple devices on one cable | Each device needs its own IP and HTTP request |
+| **Total Energy** | Approximate (register × 3) | Exact value |
+| **Daily Energy** | Accurate (register 30038) | Sometimes returns 0 (broken on some firmware) |
+
+For most installations, RS485 is the better choice. The HTTP API is useful as a secondary data source or if no RS485 adapter is available.
+
 ## Troubleshooting
 
 **Service keeps restarting:**
