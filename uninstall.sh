@@ -19,13 +19,5 @@ else
     echo "Service not found."
 fi
 
-# Remove udev rule
-if grep -qF "Kostal Piko RS485" /etc/udev/rules.d/localextra.rules 2>/dev/null; then
-    sed -i "/Kostal Piko RS485/d" /etc/udev/rules.d/localextra.rules
-    # Remove the udev rule line that follows the comment
-    sed -i '/VE_SERVICE.*ignore.*ENV.*ID_SERIAL_SHORT/d' /etc/udev/rules.d/localextra.rules
-    echo "Removed udev rule."
-fi
-
 echo "Uninstall complete."
 echo "Optionally remove $SCRIPT_DIR manually."

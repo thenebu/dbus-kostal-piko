@@ -14,23 +14,10 @@ if [ -f "$CONFIG_FILE" ] && [ "$1" != "--setup" ]; then
     chmod 755 "$SCRIPT_DIR/service/log/run" 2>/dev/null
     mkdir -p /var/log/$SERVICE_NAME
 
-    # Stop conflicting serial-starter service
+    # Stop conflicting serial-starter service on our port
     PORT=$(grep "^port" "$CONFIG_FILE" | sed 's/.*= *//' | xargs basename 2>/dev/null)
     if [ -n "$PORT" ] && [ -d "/service/dbus-modbus-client.serial.$PORT" ]; then
         svc -d "/service/dbus-modbus-client.serial.$PORT" 2>/dev/null
-    fi
-
-    # Ensure udev rule
-    FULL_PORT=$(grep "^port" "$CONFIG_FILE" | sed 's/.*= *//')
-    if [ -n "$FULL_PORT" ] && [ -e "$FULL_PORT" ]; then
-        USB_SERIAL=$(udevadm info -q property -n "$FULL_PORT" 2>/dev/null | grep "ID_SERIAL_SHORT=" | cut -d= -f2)
-        if [ -n "$USB_SERIAL" ]; then
-            UDEV_FILE="/etc/udev/rules.d/localextra.rules"
-            if ! grep -qF "$USB_SERIAL" "$UDEV_FILE" 2>/dev/null; then
-                echo "# Kostal Piko RS485 adapter — managed by $SERVICE_NAME" >> "$UDEV_FILE"
-                echo "ACTION==\"add\", ENV{ID_BUS}==\"usb\", ENV{ID_SERIAL_SHORT}==\"$USB_SERIAL\", ENV{VE_SERVICE}=\"ignore\"" >> "$UDEV_FILE"
-            fi
-        fi
     fi
 
     # Create/restart service
@@ -349,17 +336,6 @@ PORT_BASE=$(basename "$SELECTED_PORT")
 if [ -d "/service/dbus-modbus-client.serial.$PORT_BASE" ]; then
     echo "Stoppe konfliktierenden dbus-modbus-client auf $PORT_BASE..."
     svc -d "/service/dbus-modbus-client.serial.$PORT_BASE" 2>/dev/null
-fi
-
-# Install udev rule
-USB_SERIAL=$(udevadm info -q property -n "$SELECTED_PORT" 2>/dev/null | grep "ID_SERIAL_SHORT=" | cut -d= -f2)
-if [ -n "$USB_SERIAL" ]; then
-    UDEV_FILE="/etc/udev/rules.d/localextra.rules"
-    if ! grep -qF "$USB_SERIAL" "$UDEV_FILE" 2>/dev/null; then
-        echo "# Kostal Piko RS485 adapter — managed by $SERVICE_NAME" >> "$UDEV_FILE"
-        echo "ACTION==\"add\", ENV{ID_BUS}==\"usb\", ENV{ID_SERIAL_SHORT}==\"$USB_SERIAL\", ENV{VE_SERVICE}=\"ignore\"" >> "$UDEV_FILE"
-        echo "udev-Regel erstellt für Adapter $USB_SERIAL."
-    fi
 fi
 
 # Create service symlink
