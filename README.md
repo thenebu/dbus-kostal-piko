@@ -76,10 +76,13 @@ You can find your Piko's firmware version under *Info > Versionen*:
    ssh root@<gx-ip>
    ```
 
-2. Clone the driver:
+2. Download and extract the driver:
    ```bash
    cd /data/etc
-   git clone https://github.com/thenebu/dbus-kostal-piko.git
+   wget -O /tmp/dbus-kostal-piko.tar.gz https://github.com/thenebu/dbus-kostal-piko/archive/refs/heads/main.tar.gz
+   tar xzf /tmp/dbus-kostal-piko.tar.gz
+   mv dbus-kostal-piko-main dbus-kostal-piko
+   rm /tmp/dbus-kostal-piko.tar.gz
    ```
 
 3. Run the installer:
