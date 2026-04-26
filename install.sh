@@ -117,33 +117,36 @@ SERIAL_NUMBER="unknown"
 
 # Quick test read using python + pymodbus
 PROBE_RESULT=$(python3 << PYEOF
-from pymodbus.client.sync import ModbusSerialClient
-import struct, time
-client = ModbusSerialClient(method='rtu', port='$SELECTED_PORT', baudrate=19200, parity='E', stopbits=1, timeout=3)
-if client.connect():
-    # Read registers 30001-30044 for rated power
-    result = client.read_holding_registers(30000, count=44, unit=$SLAVE_ADDR)
-    rated = 0
-    if not result.isError():
-        rated = result.registers[43]  # 30044 = rated power
-    time.sleep(0.5)
-    # Read device name (30071-30083) and serial (30084-30096)
-    result2 = client.read_holding_registers(30070, count=26, unit=$SLAVE_ADDR)
-    if not result2.isError():
-        raw = b''
-        for r in result2.registers[:13]:
-            raw += struct.pack('>H', r)
-        name = raw.replace(b'\x00', b'').decode('ascii', errors='replace').strip()
-        raw2 = b''
-        for r in result2.registers[13:26]:
-            raw2 += struct.pack('>H', r)
-        serial = raw2.replace(b'\x00', b'').decode('ascii', errors='replace').strip()
-        print(f'{name}|{serial}|{rated}')
+try:
+    from pymodbus.client.sync import ModbusSerialClient
+    import struct, time
+    client = ModbusSerialClient(method='rtu', port='$SELECTED_PORT', baudrate=19200, parity='E', stopbits=1, timeout=3)
+    if client.connect():
+        # Read registers 30001-30044 for rated power
+        result = client.read_holding_registers(30000, count=44, unit=$SLAVE_ADDR)
+        rated = 0
+        if result and not result.isError() and hasattr(result, 'registers') and len(result.registers) >= 44:
+            rated = result.registers[43]  # 30044 = rated power
+        time.sleep(0.5)
+        # Read device name (30071-30083) and serial (30084-30096)
+        result2 = client.read_holding_registers(30070, count=26, unit=$SLAVE_ADDR)
+        if result2 and not result2.isError() and hasattr(result2, 'registers') and len(result2.registers) >= 26:
+            raw = b''
+            for r in result2.registers[:13]:
+                raw += struct.pack('>H', r)
+            name = raw.replace(b'\x00', b'').decode('ascii', errors='replace').strip()
+            raw2 = b''
+            for r in result2.registers[13:26]:
+                raw2 += struct.pack('>H', r)
+            serial = raw2.replace(b'\x00', b'').decode('ascii', errors='replace').strip()
+            print(f'{name}|{serial}|{rated}')
+        else:
+            print('ERROR|read_failed|0')
+        client.close()
     else:
-        print('ERROR|read_failed|0')
-    client.close()
-else:
-    print('ERROR|no_connection|0')
+        print('ERROR|no_connection|0')
+except Exception as e:
+    print(f'ERROR|{e}|0')
 PYEOF
 )
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 
 from gi.repository import GLib
-import platform
 import logging
+import signal
 import sys
 import os
 import struct
@@ -68,13 +68,17 @@ def connect_modbus():
 
 def read_device_info(client):
     """Read device name and serial number (registers 30071-30096)."""
-    result = client.read_holding_registers(30071 - 1, count=26, unit=SLAVE_ADDR)
-    if result.isError():
-        logging.warning("Could not read device info registers")
+    try:
+        result = client.read_holding_registers(30071 - 1, count=26, unit=SLAVE_ADDR)
+        if result is None or result.isError():
+            logging.warning("Could not read device info registers")
+            return DEVICE_NAME, "unknown"
+        name = read_ascii(result.registers[0:13], 13)
+        serial = read_ascii(result.registers[13:26], 13)
+        return name or DEVICE_NAME, serial or "unknown"
+    except Exception:
+        logging.exception("Error reading device info")
         return DEVICE_NAME, "unknown"
-    name = read_ascii(result.registers[0:13], 13)
-    serial = read_ascii(result.registers[13:26], 13)
-    return name or DEVICE_NAME, serial or "unknown"
 
 
 # --- dbus service ---
@@ -87,7 +91,7 @@ class KostalPikoService:
 
         # Management paths
         self._dbusservice.add_path("/Mgmt/ProcessName", __file__)
-        self._dbusservice.add_path("/Mgmt/ProcessVersion", "1.0.0-thenebu")
+        self._dbusservice.add_path("/Mgmt/ProcessVersion", "1.2.0-thenebu")
         self._dbusservice.add_path("/Mgmt/Connection", f"Modbus RTU {SERIAL_PORT} @{SLAVE_ADDR}")
 
         # Mandatory paths
@@ -96,7 +100,7 @@ class KostalPikoService:
         self._dbusservice.add_path("/ProductName", device_name)
         self._dbusservice.add_path("/CustomName", device_name)
         self._dbusservice.add_path("/Serial", serial_number)
-        self._dbusservice.add_path("/FirmwareVersion", "1.0.0-thenebu")
+        self._dbusservice.add_path("/FirmwareVersion", "1.2.0-thenebu")
         self._dbusservice.add_path("/Connected", 1)
         self._dbusservice.add_path("/Latency", None)
         self._dbusservice.add_path("/ErrorCode", 0)
@@ -144,109 +148,128 @@ class KostalPikoService:
         self._dbusservice.register()
         GLib.timeout_add(POLL_INTERVAL, self._poll)
 
+    def _reconnect(self):
+        logging.error("Too many errors, reconnecting...")
+        if self._client:
+            try:
+                self._client.close()
+            except Exception:
+                pass
+        self._client = None
+        self._error_count = 0
+        self._dbusservice["/Connected"] = 0
+
     def _ensure_connection(self):
         if self._client is None:
             self._client = connect_modbus()
         return self._client is not None
 
     def _poll(self):
-        if not self._ensure_connection():
-            self._dbusservice["/Connected"] = 0
-            logging.error("Modbus not connected, retrying in 5s...")
-            GLib.timeout_add(5000, self._poll)
-            return False
-
-        # Read registers 30001-30044 (address 30000-30043, count=44)
-        result = self._client.read_holding_registers(30001 - 1, count=44, unit=SLAVE_ADDR)
-
-        if result.isError():
-            self._error_count += 1
-            logging.warning(f"Modbus read error ({self._error_count}): {result}")
-            if self._error_count >= 5:
-                logging.error("Too many errors, reconnecting...")
-                self._client.close()
-                self._client = None
-                self._error_count = 0
+        try:
+            if not self._ensure_connection():
                 self._dbusservice["/Connected"] = 0
-            return True
+                return True
 
-        self._error_count = 0
-        self._dbusservice["/Connected"] = 1
-        regs = result.registers
+            # Read registers 30001-30044 (address 30000-30043, count=44)
+            result = self._client.read_holding_registers(30001 - 1, count=44, unit=SLAVE_ADDR)
 
-        # Register offsets (0-based from 30001)
-        # DC: 30001-30015 (3 strings x 5 regs)
-        # AC: 30016-30027 (3 phases x 4 regs)
-        # Totals: 30029, 30031, 30033, 30034
-        # Energy: 30038, 30039
+            if result is None or result.isError():
+                self._error_count += 1
+                logging.warning(f"Modbus read error ({self._error_count}): {result}")
+                if self._error_count >= 5:
+                    self._reconnect()
+                return True
 
-        # AC phase data
-        ac_l1_voltage = regs[15] / 10.0   # 30016
-        ac_l1_current = regs[16] / 100.0  # 30017
-        ac_l1_power   = regs[17]          # 30018
+            if not hasattr(result, 'registers') or len(result.registers) < 44:
+                logging.warning(f"Incomplete response: got {len(getattr(result, 'registers', []))} registers, expected 44")
+                self._error_count += 1
+                if self._error_count >= 5:
+                    self._reconnect()
+                return True
 
-        ac_l2_voltage = regs[19] / 10.0   # 30020
-        ac_l2_current = regs[20] / 100.0  # 30021
-        ac_l2_power   = regs[21]          # 30022
+            self._error_count = 0
+            self._dbusservice["/Connected"] = 1
+            regs = result.registers
 
-        ac_l3_voltage = regs[23] / 10.0   # 30024
-        ac_l3_current = regs[24] / 100.0  # 30025
-        ac_l3_power   = regs[25]          # 30026
+            # Register offsets (0-based from 30001)
+            # DC: 30001-30015 (3 strings x 5 regs)
+            # AC: 30016-30027 (3 phases x 4 regs)
+            # Totals: 30029, 30031, 30033, 30034
+            # Energy: 30038, 30039
 
-        ac_total_power = regs[30]         # 30031
-        grid_freq      = regs[33] / 10.0  # 30034
-        daily_energy   = regs[37] / 1000.0  # 30038 Wh → kWh
-        total_energy   = regs[38] * 3     # 30039 kWh per string × 3 strings = total
+            # AC phase data
+            ac_l1_voltage = regs[15] / 10.0   # 30016
+            ac_l1_current = regs[16] / 100.0  # 30017
+            ac_l1_power   = regs[17]          # 30018
 
-        # AC totals
-        ac_total_current = ac_l1_current + ac_l2_current + ac_l3_current
-        ac_avg_voltage = (ac_l1_voltage + ac_l2_voltage + ac_l3_voltage) / 3.0
+            ac_l2_voltage = regs[19] / 10.0   # 30020
+            ac_l2_current = regs[20] / 100.0  # 30021
+            ac_l2_power   = regs[21]          # 30022
 
-        # Update dbus
-        self._dbusservice["/Ac/Power"] = ac_total_power
-        self._dbusservice["/Ac/Current"] = round(ac_total_current, 2)
-        self._dbusservice["/Ac/Voltage"] = round(ac_avg_voltage, 1)
-        self._dbusservice["/Ac/Energy/Forward"] = round(total_energy, 2)
+            ac_l3_voltage = regs[23] / 10.0   # 30024
+            ac_l3_current = regs[24] / 100.0  # 30025
+            ac_l3_power   = regs[25]          # 30026
 
-        self._dbusservice["/Ac/L1/Power"] = ac_l1_power
-        self._dbusservice["/Ac/L1/Voltage"] = round(ac_l1_voltage, 1)
-        self._dbusservice["/Ac/L1/Current"] = round(ac_l1_current, 2)
-        self._dbusservice["/Ac/L1/Frequency"] = round(grid_freq, 2)
-        # Per-phase energy: equal split (no per-phase register available)
-        l1_energy = round(total_energy / 3.0, 2)
-        l2_energy = round(total_energy / 3.0, 2)
-        l3_energy = round(total_energy / 3.0, 2)
-        self._dbusservice["/Ac/L1/Energy/Forward"] = l1_energy
+            ac_total_power = regs[30]         # 30031
+            grid_freq      = regs[33] / 10.0  # 30034
+            daily_energy   = regs[37] / 1000.0  # 30038 Wh → kWh
+            total_energy   = regs[38] * 3     # 30039 kWh per string × 3 strings = total
 
-        self._dbusservice["/Ac/L2/Power"] = ac_l2_power
-        self._dbusservice["/Ac/L2/Voltage"] = round(ac_l2_voltage, 1)
-        self._dbusservice["/Ac/L2/Current"] = round(ac_l2_current, 2)
-        self._dbusservice["/Ac/L2/Frequency"] = round(grid_freq, 2)
-        self._dbusservice["/Ac/L2/Energy/Forward"] = l2_energy
+            # AC totals
+            ac_total_current = ac_l1_current + ac_l2_current + ac_l3_current
+            ac_avg_voltage = (ac_l1_voltage + ac_l2_voltage + ac_l3_voltage) / 3.0
 
-        self._dbusservice["/Ac/L3/Power"] = ac_l3_power
-        self._dbusservice["/Ac/L3/Voltage"] = round(ac_l3_voltage, 1)
-        self._dbusservice["/Ac/L3/Current"] = round(ac_l3_current, 2)
-        self._dbusservice["/Ac/L3/Frequency"] = round(grid_freq, 2)
-        self._dbusservice["/Ac/L3/Energy/Forward"] = l3_energy
+            # Update dbus
+            self._dbusservice["/Ac/Power"] = ac_total_power
+            self._dbusservice["/Ac/Current"] = round(ac_total_current, 2)
+            self._dbusservice["/Ac/Voltage"] = round(ac_avg_voltage, 1)
+            self._dbusservice["/Ac/Energy/Forward"] = round(total_energy, 2)
 
-        # Status: 7=running, 8=standby
-        if ac_total_power >= 10:
-            self._dbusservice["/StatusCode"] = 7
-        else:
-            self._dbusservice["/StatusCode"] = 8
+            self._dbusservice["/Ac/L1/Power"] = ac_l1_power
+            self._dbusservice["/Ac/L1/Voltage"] = round(ac_l1_voltage, 1)
+            self._dbusservice["/Ac/L1/Current"] = round(ac_l1_current, 2)
+            self._dbusservice["/Ac/L1/Frequency"] = round(grid_freq, 2)
+            # Per-phase energy: equal split (no per-phase register available)
+            l1_energy = round(total_energy / 3.0, 2)
+            l2_energy = round(total_energy / 3.0, 2)
+            l3_energy = round(total_energy / 3.0, 2)
+            self._dbusservice["/Ac/L1/Energy/Forward"] = l1_energy
 
-        # UpdateIndex
-        idx = (self._dbusservice["/UpdateIndex"] + 1) % 256
-        self._dbusservice["/UpdateIndex"] = idx
+            self._dbusservice["/Ac/L2/Power"] = ac_l2_power
+            self._dbusservice["/Ac/L2/Voltage"] = round(ac_l2_voltage, 1)
+            self._dbusservice["/Ac/L2/Current"] = round(ac_l2_current, 2)
+            self._dbusservice["/Ac/L2/Frequency"] = round(grid_freq, 2)
+            self._dbusservice["/Ac/L2/Energy/Forward"] = l2_energy
 
-        logging.info(
-            f"Piko: {ac_total_power}W | "
-            f"L1: {ac_l1_power}W {ac_l1_voltage}V {ac_l1_current}A | "
-            f"L2: {ac_l2_power}W {ac_l2_voltage}V {ac_l2_current}A | "
-            f"L3: {ac_l3_power}W {ac_l3_voltage}V {ac_l3_current}A | "
-            f"{grid_freq}Hz | Daily: {daily_energy}kWh"
-        )
+            self._dbusservice["/Ac/L3/Power"] = ac_l3_power
+            self._dbusservice["/Ac/L3/Voltage"] = round(ac_l3_voltage, 1)
+            self._dbusservice["/Ac/L3/Current"] = round(ac_l3_current, 2)
+            self._dbusservice["/Ac/L3/Frequency"] = round(grid_freq, 2)
+            self._dbusservice["/Ac/L3/Energy/Forward"] = l3_energy
+
+            # Status: 7=running, 8=standby
+            if ac_total_power >= 10:
+                self._dbusservice["/StatusCode"] = 7
+            else:
+                self._dbusservice["/StatusCode"] = 8
+
+            # UpdateIndex
+            idx = (self._dbusservice["/UpdateIndex"] + 1) % 256
+            self._dbusservice["/UpdateIndex"] = idx
+
+            logging.info(
+                f"Piko: {ac_total_power}W | "
+                f"L1: {ac_l1_power}W {ac_l1_voltage}V {ac_l1_current}A | "
+                f"L2: {ac_l2_power}W {ac_l2_voltage}V {ac_l2_current}A | "
+                f"L3: {ac_l3_power}W {ac_l3_voltage}V {ac_l3_current}A | "
+                f"{grid_freq}Hz | Daily: {daily_energy}kWh"
+            )
+
+        except Exception:
+            logging.exception("Unexpected error in poll cycle")
+            self._error_count += 1
+            if self._error_count >= 5:
+                self._reconnect()
 
         return True
 
@@ -272,7 +295,7 @@ def main():
 
     servicename = f"com.victronenergy.pvinverter.kostal_piko_{DEVICE_INSTANCE}"
 
-    KostalPikoService(
+    service = KostalPikoService(
         servicename=servicename,
         deviceinstance=DEVICE_INSTANCE,
         device_name=device_name,
@@ -280,7 +303,21 @@ def main():
     )
 
     logging.info(f"Registered on dbus as {servicename}")
+
     mainloop = GLib.MainLoop()
+
+    def shutdown(signum, frame):
+        logging.info("Shutting down...")
+        if service._client:
+            try:
+                service._client.close()
+            except Exception:
+                pass
+        mainloop.quit()
+
+    signal.signal(signal.SIGTERM, shutdown)
+    signal.signal(signal.SIGINT, shutdown)
+
     mainloop.run()
 
 
