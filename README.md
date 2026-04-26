@@ -1,8 +1,25 @@
-# dbus-kostal-piko — Kostal Piko (old series) driver for VenusOS
+# dbus-kostal-piko
 
-Integrates older Kostal Piko solar inverters (Piko 5.5 – Piko 20) into Victron Energy's VenusOS via Modbus RTU over RS485.
+Integrates older Kostal Piko solar inverters (Piko 5.5 -- Piko 20) into Victron Energy's VenusOS via Modbus RTU over RS485.
 
 Tested on: **Kostal Piko 17** with Victron **Cerbo GX** (VenusOS v3.72)
+
+![VenusOS PV Inverter Overview](screenshots/Piko_Settings.png)
+
+## Table of Contents
+
+- [Features](#features)
+- [Hardware Requirements](#hardware-requirements)
+- [Wiring](#wiring)
+- [Modbus Settings on the Piko](#modbus-settings-on-the-piko)
+- [Installation](#installation)
+- [Screenshots](#screenshots)
+- [Configuration](#configuration)
+- [Modbus Register Map](#modbus-register-map)
+- [Alternative: HTTP API (dxsEntries)](#alternative-http-api-dxsentries)
+- [Troubleshooting](#troubleshooting)
+- [Uninstall](#uninstall)
+- [License](#license)
 
 ## Features
 
@@ -13,26 +30,35 @@ Tested on: **Kostal Piko 17** with Victron **Cerbo GX** (VenusOS v3.72)
 - Total energy yield (approximate)
 - Auto-reconnect on communication errors
 - Survives VenusOS firmware updates
+- No rootfs modifications -- everything lives in `/data/`
 
 ## Hardware Requirements
 
 - Kostal Piko inverter (old series, not Piko IQ/Plenticore)
-- USB-to-RS485 adapter (FTDI recommended)
+- USB-to-RS485 adapter (FTDI recommended) -- [example on Amazon](https://www.amazon.de/dp/B081NBCJRS)
 - Victron GX device (Cerbo GX, Venus GX, Raspberry Pi with VenusOS)
 
 ## Wiring
 
 Connect the RS485 adapter to the Piko's RS485 terminal:
-- **A (D-)** → RS485 adapter A/D-
-- **B (D+)** → RS485 adapter B/D+
-- Optional: 120Ω termination resistor between A and B
+- **A (D-)** --> RS485 adapter A/D-
+- **B (D+)** --> RS485 adapter B/D+
+- Optional: 120 Ohm termination resistor between A and B
 
 ## Modbus Settings on the Piko
 
-Configure via the Piko's display menu:
-- **Slave address**: 3 (or whatever you set in config.ini)
+Configure via the Piko's web interface under *Einstellungen > Kommunikation > RS485*:
+
+![Piko RS485 Settings](screenshots/Piko_rs485.png)
+
+- **Bustermination**: enabled
+- **Protocol**: Modbus
 - **Baud rate**: 19200
-- **Parity**: Even
+- **Slave address**: 3 (or whatever you set in config.ini)
+
+You can find your Piko's firmware version under *Info > Versionen*:
+
+![Piko Firmware Versions](screenshots/Piko_version.png)
 
 ## Installation
 
@@ -74,11 +100,27 @@ To re-run the setup wizard later:
 bash /data/etc/dbus-kostal-piko/install.sh --setup
 ```
 
-## Uninstall
+## Screenshots
 
-```bash
-bash /data/etc/dbus-kostal-piko/uninstall.sh
-```
+### PV Inverter Overview
+3-phase AC data with per-phase voltage, current, power, and energy:
+
+![PV Inverter Overview](screenshots/Piko_Settings.png)
+
+### Device Info
+Device details showing Modbus RTU connection, serial number, and VRM instance:
+
+![Device Info](screenshots/Piko_Device.png)
+
+### Piko RS485 Configuration
+Modbus settings in the Piko's web interface:
+
+![RS485 Settings](screenshots/Piko_rs485.png)
+
+### Piko Firmware Versions
+Tested with UI 06.53 / FW 06.17:
+
+![Firmware Versions](screenshots/Piko_version.png)
 
 ## Configuration
 
@@ -123,7 +165,7 @@ Reverse-engineered and verified against the Piko's HTTP API.
 | 30033    | Status         | 100=ok |
 | 30034    | Grid Frequency | /10 Hz |
 | 30038    | Daily Energy   | Wh     |
-| 30039    | Energy/String  | kWh (×3 for total) |
+| 30039    | Energy/String  | kWh (x3 for total) |
 | 30044    | Rated Power    | W      |
 
 ### Device Info
@@ -194,7 +236,7 @@ curl "http://192.168.2.64/api/dxs.json?dxsEntries=67109120&dxsEntries=251658753"
 | **Availability** | Always responds while inverter has power | Web server can hang, no watchdog |
 | **Firmware updates** | Protocol is stable, hardware-level | Piko firmware updates could change API |
 | **Multi-device** | RS485 bus supports multiple devices on one cable | Each device needs its own IP and HTTP request |
-| **Total Energy** | Approximate (register × 3) | Exact value |
+| **Total Energy** | Approximate (register x 3) | Exact value |
 | **Daily Energy** | Accurate (register 30038) | Sometimes returns 0 (broken on some firmware) |
 
 For most installations, RS485 is the better choice. The HTTP API is useful as a secondary data source or if no RS485 adapter is available.
@@ -211,14 +253,20 @@ Check logs: `cat /var/log/dbus-kostal-piko/current | tai64nlocal`
 - Is another service using the port? `fuser /dev/ttyUSB3`
 
 **serial-starter claims the port:**
-The install script adds a udev rule automatically. If it doesn't work:
+The install script stops the conflicting service automatically. If it doesn't work:
 ```bash
 # Manually stop the conflicting service
 svc -d /service/dbus-modbus-client.serial.ttyUSB3
 ```
 
 **VRM shows wrong energy total:**
-Register 30039 stores energy per string. The driver multiplies by 3 for the total. This is approximate — within ~0.2% of the HTTP API value.
+Register 30039 stores energy per string. The driver multiplies by 3 for the total. This is approximate -- within ~0.2% of the HTTP API value.
+
+## Uninstall
+
+```bash
+bash /data/etc/dbus-kostal-piko/uninstall.sh
+```
 
 ## License
 
