@@ -212,15 +212,10 @@ class KostalPikoService:
         self._dbusservice["/Ac/L1/Voltage"] = round(ac_l1_voltage, 1)
         self._dbusservice["/Ac/L1/Current"] = round(ac_l1_current, 2)
         self._dbusservice["/Ac/L1/Frequency"] = round(grid_freq, 2)
-        # Distribute total energy proportionally by power share
-        if ac_total_power > 0:
-            l1_energy = round(total_energy * ac_l1_power / ac_total_power, 2)
-            l2_energy = round(total_energy * ac_l2_power / ac_total_power, 2)
-            l3_energy = round(total_energy * ac_l3_power / ac_total_power, 2)
-        else:
-            l1_energy = round(total_energy / 3.0, 2)
-            l2_energy = round(total_energy / 3.0, 2)
-            l3_energy = round(total_energy / 3.0, 2)
+        # Per-phase energy: equal split (no per-phase register available)
+        l1_energy = round(total_energy / 3.0, 2)
+        l2_energy = round(total_energy / 3.0, 2)
+        l3_energy = round(total_energy / 3.0, 2)
         self._dbusservice["/Ac/L1/Energy/Forward"] = l1_energy
 
         self._dbusservice["/Ac/L2/Power"] = ac_l2_power

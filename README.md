@@ -271,8 +271,8 @@ The install script stops the conflicting service automatically. If it doesn't wo
 svc -d /service/dbus-modbus-client.serial.ttyUSB3
 ```
 
-**VRM shows wrong energy total:**
-Register 30039 stores energy per string. The driver multiplies by 3 for the total. This is approximate -- within ~0.2% of the HTTP API value.
+**Energy values are approximate:**
+The Piko does not provide a total energy register. Register 30039 stores energy per DC string -- the driver multiplies by 3 for the total. This is approximate, within ~0.2% of the HTTP API value. Per-phase energy (L1/L2/L3) is split equally (total / 3) since no per-phase energy registers exist.
 
 ## Uninstall
 
