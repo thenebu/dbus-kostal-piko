@@ -7,11 +7,17 @@ import sys
 import os
 import struct
 import configparser
+import time
 
 sys.path.insert(1, os.path.join(os.path.dirname(__file__), "ext", "velib_python"))
 from vedbus import VeDbusService
 
-from pymodbus.client.sync import ModbusSerialClient
+try:
+    # pymodbus <=2.x
+    from pymodbus.client.sync import ModbusSerialClient
+except ImportError:
+    # pymodbus >=3.x compatibility import
+    from pymodbus.client import ModbusSerialClient
 
 
 # --- Config ---
@@ -19,13 +25,17 @@ from pymodbus.client.sync import ModbusSerialClient
 config_file = os.path.join(os.path.dirname(os.path.realpath(__file__)), "config.ini")
 if not os.path.exists(config_file):
     print(f"ERROR: {config_file} not found. Driver restarts in 60 seconds.")
-    import time; time.sleep(60)
+    time.sleep(60)
     sys.exit(1)
 
 config = configparser.ConfigParser()
 config.read(config_file)
 
-log_level = getattr(logging, config.get("DEFAULT", "logging", fallback="WARNING"))
+log_level_name = config.get("DEFAULT", "logging", fallback="WARNING").strip().upper()
+log_level = getattr(logging, log_level_name, None)
+if not isinstance(log_level, int):
+    print(f"WARNING: Invalid logging level '{log_level_name}', fallback to WARNING.")
+    log_level = logging.WARNING
 logging.basicConfig(level=log_level)
 
 try:
@@ -40,9 +50,11 @@ try:
     PV_MAX = config.getint("PV", "max", fallback=17000)
     PV_POSITION = config.getint("PV", "position", fallback=1)
     POLL_INTERVAL = config.getint("DEFAULT", "poll_interval", fallback=1000)
+    CONNECT_RETRY_BASE = config.getfloat("DEFAULT", "connect_retry_base", fallback=max(1.0, POLL_INTERVAL / 1000.0))
+    CONNECT_RETRY_MAX = config.getfloat("DEFAULT", "connect_retry_max", fallback=60.0)
 except (ValueError, configparser.Error) as e:
     logging.error(f"Invalid config.ini: {e}")
-    import time; time.sleep(60)
+    time.sleep(60)
     sys.exit(1)
 
 if SLAVE_ADDR < 1 or SLAVE_ADDR > 247:
@@ -53,6 +65,17 @@ if PV_POSITION not in (0, 1, 2):
     sys.exit(1)
 if PARITY not in ("N", "E", "O"):
     logging.error(f"Invalid parity: {PARITY} (must be N, E, or O)")
+    sys.exit(1)
+if POLL_INTERVAL <= 0:
+    logging.error(f"Invalid poll_interval: {POLL_INTERVAL} (must be > 0)")
+    sys.exit(1)
+if CONNECT_RETRY_BASE <= 0:
+    logging.error(f"Invalid connect_retry_base: {CONNECT_RETRY_BASE} (must be > 0)")
+    sys.exit(1)
+if CONNECT_RETRY_MAX < CONNECT_RETRY_BASE:
+    logging.error(
+        f"Invalid connect_retry_max: {CONNECT_RETRY_MAX} (must be >= connect_retry_base={CONNECT_RETRY_BASE})"
+    )
     sys.exit(1)
 
 
@@ -81,10 +104,18 @@ def connect_modbus():
     return client
 
 
+def read_holding_registers(client, address, count):
+    """Compat wrapper for pymodbus unit/slave argument changes."""
+    try:
+        return client.read_holding_registers(address, count=count, unit=SLAVE_ADDR)
+    except TypeError:
+        return client.read_holding_registers(address, count=count, slave=SLAVE_ADDR)
+
+
 def read_device_info(client):
     """Read device name and serial number (registers 30071-30096)."""
     try:
-        result = client.read_holding_registers(30071 - 1, count=26, unit=SLAVE_ADDR)
+        result = read_holding_registers(client, 30071 - 1, 26)
         if result is None or result.isError():
             logging.warning("Could not read device info registers")
             return DEVICE_NAME, "unknown"
@@ -103,6 +134,8 @@ class KostalPikoService:
         self._dbusservice = VeDbusService(servicename, register=False)
         self._client = None
         self._error_count = 0
+        self._connect_failures = 0
+        self._next_connect_ts = 0.0
 
         # Management paths
         self._dbusservice.add_path("/Mgmt/ProcessName", __file__)
@@ -170,10 +203,18 @@ class KostalPikoService:
             self._dbusservice[f"/Ac/{phase}/Voltage"] = None
             self._dbusservice[f"/Ac/{phase}/Current"] = None
             self._dbusservice[f"/Ac/{phase}/Frequency"] = None
+            self._dbusservice[f"/Ac/{phase}/Energy/Forward"] = None
         self._dbusservice["/Ac/Power"] = None
         self._dbusservice["/Ac/Current"] = None
         self._dbusservice["/Ac/Voltage"] = None
+        self._dbusservice["/Ac/Energy/Forward"] = None
         self._dbusservice["/StatusCode"] = 0
+
+    def _schedule_connect_retry(self):
+        failures = min(self._connect_failures, 6)
+        delay = min(CONNECT_RETRY_BASE * (2 ** failures), CONNECT_RETRY_MAX)
+        self._next_connect_ts = time.monotonic() + delay
+        logging.warning(f"Retrying Modbus connect in {delay:.1f}s (failures={self._connect_failures})")
 
     def _reconnect(self):
         logging.error("Too many errors, reconnecting...")
@@ -186,11 +227,25 @@ class KostalPikoService:
         self._error_count = 0
         self._dbusservice["/Connected"] = 0
         self._invalidate()
+        self._connect_failures += 1
+        self._schedule_connect_retry()
 
     def _ensure_connection(self):
+        if self._client is not None:
+            return True
+
+        if time.monotonic() < self._next_connect_ts:
+            return False
+
+        self._client = connect_modbus()
         if self._client is None:
-            self._client = connect_modbus()
-        return self._client is not None
+            self._connect_failures += 1
+            self._schedule_connect_retry()
+            return False
+
+        self._connect_failures = 0
+        self._next_connect_ts = 0.0
+        return True
 
     def _poll(self):
         try:
@@ -199,7 +254,7 @@ class KostalPikoService:
                 return True
 
             # Read registers 30001-30044 (address 30000-30043, count=44)
-            result = self._client.read_holding_registers(30001 - 1, count=44, unit=SLAVE_ADDR)
+            result = read_holding_registers(self._client, 30001 - 1, 44)
 
             if result is None or result.isError():
                 self._error_count += 1
