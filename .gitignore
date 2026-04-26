@@ -1,0 +1,5 @@
+config.ini
+ext/
+__pycache__/
+*.pyc
+/var/

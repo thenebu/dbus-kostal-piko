@@ -1,0 +1,4 @@
+#!/bin/sh
+echo "*** starting dbus-kostal-piko ***"
+exec 2>&1
+exec python /data/etc/dbus-kostal-piko/dbus-kostal-piko.py
