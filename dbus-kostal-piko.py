@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 from gi.repository import GLib
 import logging
@@ -122,12 +122,12 @@ class KostalPikoService:
         self._dbusservice.add_path("/Position", PV_POSITION)
         self._dbusservice.add_path("/StatusCode", 0)
 
-        # Formatters
-        def _w(p, v): return f"{v:.0f}W"
-        def _v(p, v): return f"{v:.1f}V"
-        def _a(p, v): return f"{v:.2f}A"
-        def _hz(p, v): return f"{v:.2f}Hz"
-        def _kwh(p, v): return f"{v:.2f}kWh"
+        # Formatters (v can be None after _invalidate)
+        def _w(p, v): return f"{v:.0f}W" if v is not None else "---"
+        def _v(p, v): return f"{v:.1f}V" if v is not None else "---"
+        def _a(p, v): return f"{v:.2f}A" if v is not None else "---"
+        def _hz(p, v): return f"{v:.2f}Hz" if v is not None else "---"
+        def _kwh(p, v): return f"{v:.2f}kWh" if v is not None else "---"
         def _n(p, v): return f"{v}"
 
         # AC total
