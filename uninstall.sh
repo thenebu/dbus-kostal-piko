@@ -20,10 +20,10 @@ else
 fi
 
 # Remove udev rule
-SERIAL="B000083X"
-if grep -qF "$SERIAL" /etc/udev/rules.d/localextra.rules 2>/dev/null; then
-    sed -i "/$SERIAL/d" /etc/udev/rules.d/localextra.rules
+if grep -qF "Kostal Piko RS485" /etc/udev/rules.d/localextra.rules 2>/dev/null; then
     sed -i "/Kostal Piko RS485/d" /etc/udev/rules.d/localextra.rules
+    # Remove the udev rule line that follows the comment
+    sed -i '/VE_SERVICE.*ignore.*ENV.*ID_SERIAL_SHORT/d' /etc/udev/rules.d/localextra.rules
     echo "Removed udev rule."
 fi
 

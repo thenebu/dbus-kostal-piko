@@ -22,16 +22,20 @@ if [ -n "$PORT" ] && [ -d "/service/dbus-modbus-client.serial.$PORT" ]; then
 fi
 
 # Install udev rule to prevent serial-starter from claiming our adapter
-SERIAL=$(grep "^serial_number" "$SCRIPT_DIR/config.ini" 2>/dev/null | sed 's/.*= *//')
-if [ -z "$SERIAL" ]; then
-    SERIAL="B000083X"
-fi
-UDEV_FILE="/etc/udev/rules.d/localextra.rules"
-UDEV_RULE="ACTION==\"add\", ENV{ID_BUS}==\"usb\", ENV{ID_SERIAL_SHORT}==\"$SERIAL\", ENV{VE_SERVICE}=\"ignore\""
-if ! grep -qF "$SERIAL" "$UDEV_FILE" 2>/dev/null; then
-    echo "# Kostal Piko RS485 adapter — managed by $SERVICE_NAME" >> "$UDEV_FILE"
-    echo "$UDEV_RULE" >> "$UDEV_FILE"
-    echo "Added udev rule to ignore adapter in serial-starter."
+PORT=$(grep "^port" "$SCRIPT_DIR/config.ini" | sed 's/.*= *//')
+if [ -n "$PORT" ] && [ -e "$PORT" ]; then
+    SERIAL=$(udevadm info -q property -n "$PORT" 2>/dev/null | grep "ID_SERIAL_SHORT=" | cut -d= -f2)
+    if [ -n "$SERIAL" ]; then
+        UDEV_FILE="/etc/udev/rules.d/localextra.rules"
+        UDEV_RULE="ACTION==\"add\", ENV{ID_BUS}==\"usb\", ENV{ID_SERIAL_SHORT}==\"$SERIAL\", ENV{VE_SERVICE}=\"ignore\""
+        if ! grep -qF "$SERIAL" "$UDEV_FILE" 2>/dev/null; then
+            echo "# Kostal Piko RS485 adapter — managed by $SERVICE_NAME" >> "$UDEV_FILE"
+            echo "$UDEV_RULE" >> "$UDEV_FILE"
+            echo "Added udev rule for adapter $SERIAL to prevent serial-starter conflict."
+        fi
+    else
+        echo "WARNING: Could not detect adapter serial for $PORT. You may need to manually stop serial-starter."
+    fi
 fi
 
 # Create service symlink
