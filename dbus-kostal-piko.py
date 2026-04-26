@@ -28,17 +28,32 @@ config.read(config_file)
 log_level = getattr(logging, config.get("DEFAULT", "logging", fallback="WARNING"))
 logging.basicConfig(level=log_level)
 
-DEVICE_NAME = config.get("DEFAULT", "device_name", fallback="Kostal Piko 17")
-DEVICE_INSTANCE = config.getint("DEFAULT", "device_instance", fallback=52)
-SERIAL_PORT = config.get("MODBUS", "port", fallback="/dev/ttyUSB3")
-SLAVE_ADDR = config.getint("MODBUS", "slave_address", fallback=3)
-BAUDRATE = config.getint("MODBUS", "baudrate", fallback=19200)
-PARITY = config.get("MODBUS", "parity", fallback="E")
-STOPBITS = config.getint("MODBUS", "stopbits", fallback=1)
-MB_TIMEOUT = config.getint("MODBUS", "timeout", fallback=2)
-PV_MAX = config.getint("PV", "max", fallback=17000)
-PV_POSITION = config.getint("PV", "position", fallback=1)
-POLL_INTERVAL = config.getint("DEFAULT", "poll_interval", fallback=1000)
+try:
+    DEVICE_NAME = config.get("DEFAULT", "device_name", fallback="Kostal Piko 17")
+    DEVICE_INSTANCE = config.getint("DEFAULT", "device_instance", fallback=52)
+    SERIAL_PORT = config.get("MODBUS", "port", fallback="/dev/ttyUSB3")
+    SLAVE_ADDR = config.getint("MODBUS", "slave_address", fallback=3)
+    BAUDRATE = config.getint("MODBUS", "baudrate", fallback=19200)
+    PARITY = config.get("MODBUS", "parity", fallback="E")
+    STOPBITS = config.getint("MODBUS", "stopbits", fallback=1)
+    MB_TIMEOUT = config.getint("MODBUS", "timeout", fallback=2)
+    PV_MAX = config.getint("PV", "max", fallback=17000)
+    PV_POSITION = config.getint("PV", "position", fallback=1)
+    POLL_INTERVAL = config.getint("DEFAULT", "poll_interval", fallback=1000)
+except (ValueError, configparser.Error) as e:
+    logging.error(f"Invalid config.ini: {e}")
+    import time; time.sleep(60)
+    sys.exit(1)
+
+if SLAVE_ADDR < 1 or SLAVE_ADDR > 247:
+    logging.error(f"Invalid slave_address: {SLAVE_ADDR} (must be 1-247)")
+    sys.exit(1)
+if PV_POSITION not in (0, 1, 2):
+    logging.error(f"Invalid position: {PV_POSITION} (must be 0, 1, or 2)")
+    sys.exit(1)
+if PARITY not in ("N", "E", "O"):
+    logging.error(f"Invalid parity: {PARITY} (must be N, E, or O)")
+    sys.exit(1)
 
 
 # --- Modbus helpers ---
@@ -91,7 +106,7 @@ class KostalPikoService:
 
         # Management paths
         self._dbusservice.add_path("/Mgmt/ProcessName", __file__)
-        self._dbusservice.add_path("/Mgmt/ProcessVersion", "1.2.0-thenebu")
+        self._dbusservice.add_path("/Mgmt/ProcessVersion", "1.3.0-thenebu")
         self._dbusservice.add_path("/Mgmt/Connection", f"Modbus RTU {SERIAL_PORT} @{SLAVE_ADDR}")
 
         # Mandatory paths
@@ -100,7 +115,7 @@ class KostalPikoService:
         self._dbusservice.add_path("/ProductName", device_name)
         self._dbusservice.add_path("/CustomName", device_name)
         self._dbusservice.add_path("/Serial", serial_number)
-        self._dbusservice.add_path("/FirmwareVersion", "1.2.0-thenebu")
+        self._dbusservice.add_path("/FirmwareVersion", "1.3.0-thenebu")
         self._dbusservice.add_path("/Connected", 1)
         self._dbusservice.add_path("/Latency", None)
         self._dbusservice.add_path("/ErrorCode", 0)
@@ -148,16 +163,29 @@ class KostalPikoService:
         self._dbusservice.register()
         GLib.timeout_add(POLL_INTERVAL, self._poll)
 
+    def _invalidate(self):
+        """Set all measurement paths to None so consumers see stale data is gone."""
+        for phase in ["L1", "L2", "L3"]:
+            self._dbusservice[f"/Ac/{phase}/Power"] = None
+            self._dbusservice[f"/Ac/{phase}/Voltage"] = None
+            self._dbusservice[f"/Ac/{phase}/Current"] = None
+            self._dbusservice[f"/Ac/{phase}/Frequency"] = None
+        self._dbusservice["/Ac/Power"] = None
+        self._dbusservice["/Ac/Current"] = None
+        self._dbusservice["/Ac/Voltage"] = None
+        self._dbusservice["/StatusCode"] = 0
+
     def _reconnect(self):
         logging.error("Too many errors, reconnecting...")
         if self._client:
             try:
                 self._client.close()
             except Exception:
-                pass
+                logging.warning("Error closing Modbus client during reconnect")
         self._client = None
         self._error_count = 0
         self._dbusservice["/Connected"] = 0
+        self._invalidate()
 
     def _ensure_connection(self):
         if self._client is None:
@@ -307,13 +335,17 @@ def main():
     mainloop = GLib.MainLoop()
 
     def shutdown(signum, frame):
+        GLib.idle_add(_cleanup)
+
+    def _cleanup():
         logging.info("Shutting down...")
         if service._client:
             try:
                 service._client.close()
             except Exception:
-                pass
+                logging.warning("Error closing Modbus client during shutdown")
         mainloop.quit()
+        return False
 
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)

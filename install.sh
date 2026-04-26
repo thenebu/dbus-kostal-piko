@@ -15,7 +15,15 @@ if [ -f "$CONFIG_FILE" ] && [ "$1" != "--setup" ]; then
     mkdir -p /var/log/$SERVICE_NAME
 
     # Stop conflicting serial-starter service on our port
-    PORT=$(grep "^port" "$CONFIG_FILE" | sed 's/.*= *//' | xargs basename 2>/dev/null)
+    PORT=$(python3 -c "
+import configparser, os, sys
+c = configparser.ConfigParser()
+c.read('$CONFIG_FILE')
+try:
+    print(os.path.basename(c.get('MODBUS', 'port')))
+except:
+    sys.exit(1)
+" 2>/dev/null)
     if [ -n "$PORT" ] && [ -d "/service/dbus-modbus-client.serial.$PORT" ]; then
         svc -d "/service/dbus-modbus-client.serial.$PORT" 2>/dev/null
     fi
@@ -107,6 +115,10 @@ echo "── Modbus Einstellungen ───────────────�
 echo ""
 read -p "Modbus Slave-Adresse [Standard: 3]: " SLAVE_ADDR
 SLAVE_ADDR=${SLAVE_ADDR:-3}
+if ! echo "$SLAVE_ADDR" | grep -qE '^[0-9]+$' || [ "$SLAVE_ADDR" -lt 1 ] || [ "$SLAVE_ADDR" -gt 247 ]; then
+    echo "Ungültige Slave-Adresse (1-247)."
+    exit 1
+fi
 echo "→ Slave-Adresse: $SLAVE_ADDR"
 echo ""
 
@@ -198,6 +210,10 @@ echo "  17000 (Piko 17), 20000 (Piko 20)"
 echo ""
 read -p "Nennleistung in Watt [Standard: $DEFAULT_POWER]: " MAX_POWER
 MAX_POWER=${MAX_POWER:-$DEFAULT_POWER}
+if ! echo "$MAX_POWER" | grep -qE '^[0-9]+$' || [ "$MAX_POWER" -lt 100 ] || [ "$MAX_POWER" -gt 100000 ]; then
+    echo "Ungültige Nennleistung (100-100000 W)."
+    exit 1
+fi
 echo "→ Nennleistung: ${MAX_POWER}W"
 echo ""
 
@@ -240,6 +256,10 @@ while echo "$USED_INSTANCES" | grep -qw "$DEFAULT_INSTANCE" 2>/dev/null; do
 done
 read -p "Device Instance [Standard: $DEFAULT_INSTANCE]: " DEV_INSTANCE
 DEV_INSTANCE=${DEV_INSTANCE:-$DEFAULT_INSTANCE}
+if ! echo "$DEV_INSTANCE" | grep -qE '^[0-9]+$' || [ "$DEV_INSTANCE" -lt 1 ] || [ "$DEV_INSTANCE" -gt 512 ]; then
+    echo "Ungültige Device Instance (1-512)."
+    exit 1
+fi
 echo "→ Instance: $DEV_INSTANCE"
 echo ""
 
