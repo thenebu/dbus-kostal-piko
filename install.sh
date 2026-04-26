@@ -275,7 +275,7 @@ cat > "$CONFIG_FILE" << CONF
 logging = WARNING
 device_name = $DEVICE_NAME
 device_instance = $DEV_INSTANCE
-poll_interval = 2000
+poll_interval = 1000
 
 [MODBUS]
 port = $SELECTED_PORT

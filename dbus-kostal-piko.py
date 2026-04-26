@@ -38,7 +38,7 @@ STOPBITS = config.getint("MODBUS", "stopbits", fallback=1)
 MB_TIMEOUT = config.getint("MODBUS", "timeout", fallback=2)
 PV_MAX = config.getint("PV", "max", fallback=17000)
 PV_POSITION = config.getint("PV", "position", fallback=1)
-POLL_INTERVAL = config.getint("DEFAULT", "poll_interval", fallback=2000)
+POLL_INTERVAL = config.getint("DEFAULT", "poll_interval", fallback=1000)
 
 
 # --- Modbus helpers ---
