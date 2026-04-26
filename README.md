@@ -40,7 +40,16 @@ Tested on: **Kostal Piko 17** with Victron **Cerbo GX** (VenusOS v3.72)
 
 ## Wiring
 
+The RS485 terminal is located on the communication board inside the Piko (item 3 in the diagram):
+
+![RS485 location inside the Piko](screenshots/manual_rs485location.png)
+
+The 10-pin terminal pinout -- use the **GND**, **A**, and **B** pins on the right side:
+
+![RS485 terminal pinout](screenshots/manual_rs485.png)
+
 Connect the RS485 adapter to the Piko's RS485 terminal:
+- **GND** --> RS485 adapter GND
 - **A (D-)** --> RS485 adapter A/D-
 - **B (D+)** --> RS485 adapter B/D+
 - Optional: 120 Ohm termination resistor between A and B
