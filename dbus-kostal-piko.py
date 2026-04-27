@@ -139,7 +139,7 @@ class KostalPikoService:
 
         # Management paths
         self._dbusservice.add_path("/Mgmt/ProcessName", __file__)
-        self._dbusservice.add_path("/Mgmt/ProcessVersion", "1.4.0-thenebu")
+        self._dbusservice.add_path("/Mgmt/ProcessVersion", "1.4.1-thenebu")
         self._dbusservice.add_path("/Mgmt/Connection", f"Modbus RTU {SERIAL_PORT} @{SLAVE_ADDR}")
 
         # Mandatory paths
@@ -148,7 +148,7 @@ class KostalPikoService:
         self._dbusservice.add_path("/ProductName", device_name)
         self._dbusservice.add_path("/CustomName", device_name)
         self._dbusservice.add_path("/Serial", serial_number)
-        self._dbusservice.add_path("/FirmwareVersion", "1.4.0-thenebu")
+        self._dbusservice.add_path("/FirmwareVersion", "1.4.1-thenebu")
         self._dbusservice.add_path("/Connected", 1)
         self._dbusservice.add_path("/Latency", None)
         self._dbusservice.add_path("/ErrorCode", 0)
@@ -169,9 +169,11 @@ class KostalPikoService:
             "/Ac/Current":        {"initial": None, "textformat": _a},
             "/Ac/Voltage":        {"initial": None, "textformat": _v},
             "/Ac/Energy/Forward": {"initial": None, "textformat": _kwh},
+            "/Ac/Energy/Day":     {"initial": None, "textformat": _kwh},
             "/Ac/MaxPower":       {"initial": PV_MAX, "textformat": _w},
             "/Ac/Position":       {"initial": PV_POSITION, "textformat": _n},
             "/Ac/StatusCode":     {"initial": 0, "textformat": _n},
+            "/HoursOfOperation":  {"initial": None, "textformat": _n},
             "/UpdateIndex":       {"initial": 0, "textformat": _n},
         }
 
@@ -208,6 +210,8 @@ class KostalPikoService:
         self._dbusservice["/Ac/Current"] = None
         self._dbusservice["/Ac/Voltage"] = None
         self._dbusservice["/Ac/Energy/Forward"] = None
+        self._dbusservice["/Ac/Energy/Day"] = None
+        self._dbusservice["/HoursOfOperation"] = None
         self._dbusservice["/StatusCode"] = 0
 
     def _schedule_connect_retry(self):
@@ -309,6 +313,8 @@ class KostalPikoService:
             self._dbusservice["/Ac/Current"] = round(ac_total_current, 2)
             self._dbusservice["/Ac/Voltage"] = round(ac_avg_voltage, 1)
             self._dbusservice["/Ac/Energy/Forward"] = round(total_energy, 2)
+            self._dbusservice["/Ac/Energy/Day"] = round(daily_energy, 3)
+            self._dbusservice["/HoursOfOperation"] = operating_hours
 
             self._dbusservice["/Ac/L1/Power"] = ac_l1_power
             self._dbusservice["/Ac/L1/Voltage"] = round(ac_l1_voltage, 1)
