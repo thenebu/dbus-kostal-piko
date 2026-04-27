@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 from gi.repository import GLib
+import json
 import logging
 import signal
 import sys
@@ -147,9 +148,26 @@ class KostalPikoService:
         self._last_good_read_ts = time.monotonic()
         self._stale = False
 
+        # Outage tracking — for diagnostics and JSON event log lines.
+        # An "outage" spans from the first failed read until the next
+        # successful read. We log one summary line per outage (greppable
+        # prefix OUTAGE_EVENT, JSON body) and surface counters on D-Bus.
+        self._outage_start_mono = None     # time.monotonic() at first error
+        self._outage_start_wall = None     # time.time() for ISO log
+        self._outage_error_count = 0
+        self._outage_first_error = ""
+        self._last_known_power = None      # AC power on last good read
+
+        self._diag_outage_count = 0
+        self._diag_total_read_errors = 0
+        self._diag_longest_outage_sec = 0.0
+        self._diag_last_outage_ts = 0
+        self._diag_last_outage_duration_sec = 0.0
+        self._service_start_ts = time.monotonic()
+
         # Management paths
         self._dbusservice.add_path("/Mgmt/ProcessName", __file__)
-        self._dbusservice.add_path("/Mgmt/ProcessVersion", "1.4.3-thenebu")
+        self._dbusservice.add_path("/Mgmt/ProcessVersion", "1.5.0-thenebu")
         self._dbusservice.add_path("/Mgmt/Connection", f"Modbus RTU {SERIAL_PORT} @{SLAVE_ADDR}")
 
         # Mandatory paths
@@ -158,7 +176,7 @@ class KostalPikoService:
         self._dbusservice.add_path("/ProductName", device_name)
         self._dbusservice.add_path("/CustomName", device_name)
         self._dbusservice.add_path("/Serial", serial_number)
-        self._dbusservice.add_path("/FirmwareVersion", "1.4.3-thenebu")
+        self._dbusservice.add_path("/FirmwareVersion", "1.5.0-thenebu")
         self._dbusservice.add_path("/Connected", 1)
         self._dbusservice.add_path("/Latency", None)
         self._dbusservice.add_path("/ErrorCode", 0)
@@ -173,6 +191,8 @@ class KostalPikoService:
         def _kwh(p, v): return f"{v:.2f}kWh" if v is not None else "---"
         def _n(p, v): return f"{v}"
 
+        def _sec(p, v): return f"{v:.1f}s" if v is not None else "---"
+
         # AC total
         paths = {
             "/Ac/Power":          {"initial": None, "textformat": _w},
@@ -185,6 +205,13 @@ class KostalPikoService:
             "/Ac/StatusCode":     {"initial": 0, "textformat": _n},
             "/HoursOfOperation":  {"initial": None, "textformat": _n},
             "/UpdateIndex":       {"initial": 0, "textformat": _n},
+            # Diagnostics — counters since service start
+            "/Diagnostics/InOutage":                {"initial": 0,   "textformat": _n},
+            "/Diagnostics/OutageCount":             {"initial": 0,   "textformat": _n},
+            "/Diagnostics/TotalReadErrors":         {"initial": 0,   "textformat": _n},
+            "/Diagnostics/LongestOutageSec":        {"initial": 0.0, "textformat": _sec},
+            "/Diagnostics/LastOutageTs":            {"initial": 0,   "textformat": _n},
+            "/Diagnostics/LastOutageDurationSec":   {"initial": 0.0, "textformat": _sec},
         }
 
         # Per-phase paths
@@ -207,6 +234,61 @@ class KostalPikoService:
 
         self._dbusservice.register()
         GLib.timeout_add(POLL_INTERVAL, self._poll)
+
+    def _on_read_error(self, err_text):
+        """Account for one failed read, starting an outage if not already in one."""
+        self._diag_total_read_errors += 1
+        self._dbusservice["/Diagnostics/TotalReadErrors"] = self._diag_total_read_errors
+
+        if self._outage_start_mono is None:
+            self._outage_start_mono = time.monotonic()
+            self._outage_start_wall = time.time()
+            self._outage_first_error = (err_text or "")[:200]
+            self._outage_error_count = 1
+            self._dbusservice["/Diagnostics/InOutage"] = 1
+        else:
+            self._outage_error_count += 1
+
+    def _on_read_success(self):
+        """Account for one good read; closes any active outage and emits a summary line."""
+        if self._outage_start_mono is None:
+            return  # no outage to close
+
+        duration = time.monotonic() - self._outage_start_mono
+        end_wall = time.time()
+        start_iso = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(self._outage_start_wall))
+        end_iso = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(end_wall))
+
+        event = {
+            "event": "outage",
+            "start": start_iso,
+            "end": end_iso,
+            "duration_sec": round(duration, 2),
+            "errors": self._outage_error_count,
+            "first_error": self._outage_first_error,
+            "power_before_w": self._last_known_power,
+        }
+        # Single-line JSON, greppable prefix for easy extraction:
+        #   grep OUTAGE_EVENT current | sed 's/.*OUTAGE_EVENT //' | jq -s '.'
+        logging.info("OUTAGE_EVENT " + json.dumps(event, separators=(",", ":")))
+
+        # Update diagnostics
+        self._diag_outage_count += 1
+        self._diag_last_outage_ts = int(end_wall)
+        self._diag_last_outage_duration_sec = round(duration, 2)
+        if duration > self._diag_longest_outage_sec:
+            self._diag_longest_outage_sec = round(duration, 2)
+        self._dbusservice["/Diagnostics/OutageCount"] = self._diag_outage_count
+        self._dbusservice["/Diagnostics/LastOutageTs"] = self._diag_last_outage_ts
+        self._dbusservice["/Diagnostics/LastOutageDurationSec"] = self._diag_last_outage_duration_sec
+        self._dbusservice["/Diagnostics/LongestOutageSec"] = self._diag_longest_outage_sec
+        self._dbusservice["/Diagnostics/InOutage"] = 0
+
+        # Reset outage state
+        self._outage_start_mono = None
+        self._outage_start_wall = None
+        self._outage_error_count = 0
+        self._outage_first_error = ""
 
     def _invalidate(self):
         """Set all measurement paths to None so consumers see stale data is gone."""
@@ -277,6 +359,7 @@ class KostalPikoService:
     def _poll(self):
         try:
             if not self._ensure_connection():
+                self._on_read_error("connect_failed")
                 self._maybe_invalidate_stale()
                 return True
 
@@ -293,6 +376,7 @@ class KostalPikoService:
             if not valid:
                 self._error_count += 1
                 logging.warning(f"Modbus read error ({self._error_count}): {result}")
+                self._on_read_error(str(result))
                 if self._error_count >= RECONNECT_AFTER_ERRORS:
                     self._reconnect()
                 else:
@@ -302,6 +386,7 @@ class KostalPikoService:
             self._error_count = 0
             self._last_good_read_ts = time.monotonic()
             self._stale = False
+            self._on_read_success()
             self._dbusservice["/Connected"] = 1
             regs = result.registers
 
@@ -334,6 +419,7 @@ class KostalPikoService:
             # AC totals
             ac_total_current = ac_l1_current + ac_l2_current + ac_l3_current
             ac_avg_voltage = (ac_l1_voltage + ac_l2_voltage + ac_l3_voltage) / 3.0
+            self._last_known_power = ac_total_power
 
             # Update dbus
             self._dbusservice["/Ac/Power"] = ac_total_power
@@ -384,9 +470,10 @@ class KostalPikoService:
                 f"Total: {total_energy:.1f}kWh | Hours: {operating_hours}"
             )
 
-        except Exception:
+        except Exception as exc:
             logging.exception("Unexpected error in poll cycle")
             self._error_count += 1
+            self._on_read_error(f"exception: {exc}")
             if self._error_count >= RECONNECT_AFTER_ERRORS:
                 self._reconnect()
             else:
