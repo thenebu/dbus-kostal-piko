@@ -26,8 +26,9 @@ Tested on: **Kostal Piko 17** with Victron **Cerbo GX** (VenusOS v3.72)
 - 3-phase AC data (voltage, current, power per phase)
 - 3 DC string data (voltage, current, power)
 - Grid frequency
-- Daily energy yield
-- Total energy yield (approximate)
+- Daily energy yield (exact, register 30056)
+- Total lifetime energy (exact, 32-bit register 30051+30052)
+- Operating hours (register 30054)
 - Auto-reconnect on communication errors
 - Survives VenusOS firmware updates
 - No rootfs modifications -- everything lives in `/data/`
@@ -168,17 +169,24 @@ Reverse-engineered and verified against the Piko's HTTP API.
 | 30020-22 | L2          | same  |
 | 30024-26 | L3          | same  |
 
-### Totals
+### Totals & Energy
 
-| Register | Value          | Scale  |
-|----------|----------------|--------|
-| 30029    | DC Total Power | W      |
-| 30031    | AC Total Power | W      |
-| 30033    | Status         | 100=ok |
-| 30034    | Grid Frequency | /10 Hz |
-| 30038    | Daily Energy   | Wh     |
-| 30039    | Energy/String  | kWh (x3 for total) |
-| 30044    | Rated Power    | W      |
+| Register     | Value                | Scale            |
+|--------------|----------------------|------------------|
+| 30029        | DC Total Power       | W                |
+| 30031        | AC Total Power       | W                |
+| 30033        | Cos φ                | /100             |
+| 30034        | Grid Frequency       | /10 Hz           |
+| 30044        | Rated Power          | W                |
+| 30051--30052 | Total Lifetime Yield | Wh, 32-bit BE    |
+| 30054        | Operating Hours      | h                |
+| 30056        | Daily Yield          | Wh               |
+
+Notes verified against the Piko's web interface on a Piko 17:
+- 30051+30052 (32-bit BE) is the *exact* lifetime energy in Wh -- divide by 1000 for kWh.
+- 30054 holds the operating hour counter (matches *Info > Statistik* on the Piko).
+- 30056 is the daily yield in Wh, reset at midnight.
+- Earlier driver versions used `regs[37] / 1000` (30038) for daily and `regs[38] * 3` (30039) as a `kWh-per-string * 3` heuristic for total. Both were wrong. The 30038 register is *not* a daily counter; it can decrease while the inverter is producing.
 
 ### Device Info
 
@@ -248,8 +256,8 @@ curl "http://192.168.2.64/api/dxs.json?dxsEntries=67109120&dxsEntries=251658753"
 | **Availability** | Always responds while inverter has power | Web server can hang, no watchdog |
 | **Firmware updates** | Protocol is stable, hardware-level | Piko firmware updates could change API |
 | **Multi-device** | RS485 bus supports multiple devices on one cable | Each device needs its own IP and HTTP request |
-| **Total Energy** | Approximate (register x 3) | Exact value |
-| **Daily Energy** | Accurate (register 30038) | Sometimes returns 0 (broken on some firmware) |
+| **Total Energy** | Exact (32-bit register 30051+30052) | Exact value |
+| **Daily Energy** | Exact (register 30056) | Sometimes returns 0 (broken on some firmware) |
 
 For most installations, RS485 is the better choice. The HTTP API is useful as a secondary data source or if no RS485 adapter is available.
 
@@ -271,8 +279,8 @@ The install script stops the conflicting service automatically. If it doesn't wo
 svc -d /service/dbus-modbus-client.serial.ttyUSB3
 ```
 
-**Energy values are approximate:**
-The Piko does not provide a total energy register. Register 30039 stores energy per DC string -- the driver multiplies by 3 for the total. This is approximate, within ~0.2% of the HTTP API value. Per-phase energy (L1/L2/L3) is split equally (total / 3) since no per-phase energy registers exist.
+**Per-phase energy is synthetic:**
+The Piko does not expose per-phase energy registers. The driver splits the total lifetime energy (from the 32-bit register pair 30051+30052) equally across L1/L2/L3 for the `/Ac/L*/Energy/Forward` paths. The total `/Ac/Energy/Forward` value itself is exact.
 
 ## Uninstall
 

@@ -139,7 +139,7 @@ class KostalPikoService:
 
         # Management paths
         self._dbusservice.add_path("/Mgmt/ProcessName", __file__)
-        self._dbusservice.add_path("/Mgmt/ProcessVersion", "1.3.1-thenebu")
+        self._dbusservice.add_path("/Mgmt/ProcessVersion", "1.4.0-thenebu")
         self._dbusservice.add_path("/Mgmt/Connection", f"Modbus RTU {SERIAL_PORT} @{SLAVE_ADDR}")
 
         # Mandatory paths
@@ -148,7 +148,7 @@ class KostalPikoService:
         self._dbusservice.add_path("/ProductName", device_name)
         self._dbusservice.add_path("/CustomName", device_name)
         self._dbusservice.add_path("/Serial", serial_number)
-        self._dbusservice.add_path("/FirmwareVersion", "1.3.1-thenebu")
+        self._dbusservice.add_path("/FirmwareVersion", "1.4.0-thenebu")
         self._dbusservice.add_path("/Connected", 1)
         self._dbusservice.add_path("/Latency", None)
         self._dbusservice.add_path("/ErrorCode", 0)
@@ -253,8 +253,8 @@ class KostalPikoService:
                 self._dbusservice["/Connected"] = 0
                 return True
 
-            # Read registers 30001-30044 (address 30000-30043, count=44)
-            result = read_holding_registers(self._client, 30001 - 1, 44)
+            # Read registers 30001-30056 (address 30000-30055, count=56)
+            result = read_holding_registers(self._client, 30001 - 1, 56)
 
             if result is None or result.isError():
                 self._error_count += 1
@@ -263,8 +263,8 @@ class KostalPikoService:
                     self._reconnect()
                 return True
 
-            if not hasattr(result, 'registers') or len(result.registers) < 44:
-                logging.warning(f"Incomplete response: got {len(getattr(result, 'registers', []))} registers, expected 44")
+            if not hasattr(result, 'registers') or len(result.registers) < 56:
+                logging.warning(f"Incomplete response: got {len(getattr(result, 'registers', []))} registers, expected 56")
                 self._error_count += 1
                 if self._error_count >= 5:
                     self._reconnect()
@@ -274,11 +274,12 @@ class KostalPikoService:
             self._dbusservice["/Connected"] = 1
             regs = result.registers
 
-            # Register offsets (0-based from 30001)
+            # Register offsets (0-based, regs[N] = Modbus 1-indexed register 30001+N)
             # DC: 30001-30015 (3 strings x 5 regs)
             # AC: 30016-30027 (3 phases x 4 regs)
-            # Totals: 30029, 30031, 30033, 30034
-            # Energy: 30038, 30039
+            # Totals: 30029 (DC P), 30031 (AC P), 30033 (cosφ×100), 30034 (Hz×10)
+            # Energy: 30051-30052 lifetime Wh (32-bit BE), 30056 daily Wh
+            # Hours:  30054 operating hours
 
             # AC phase data
             ac_l1_voltage = regs[15] / 10.0   # 30016
@@ -293,10 +294,11 @@ class KostalPikoService:
             ac_l3_current = regs[24] / 100.0  # 30025
             ac_l3_power   = regs[25]          # 30026
 
-            ac_total_power = regs[30]         # 30031
-            grid_freq      = regs[33] / 10.0  # 30034
-            daily_energy   = regs[37] / 1000.0  # 30038 Wh → kWh
-            total_energy   = regs[38] * 3     # 30039 kWh per string × 3 strings = total
+            ac_total_power  = regs[30]                                # 30031 W
+            grid_freq       = regs[33] / 10.0                         # 30034 Hz × 10
+            total_energy    = ((regs[50] << 16) | regs[51]) / 1000.0  # 30051-52 lifetime Wh (32-bit BE) → kWh
+            operating_hours = regs[53]                                # 30054 h
+            daily_energy    = regs[55] / 1000.0                       # 30056 daily Wh → kWh
 
             # AC totals
             ac_total_current = ac_l1_current + ac_l2_current + ac_l3_current
@@ -345,7 +347,8 @@ class KostalPikoService:
                 f"L1: {ac_l1_power}W {ac_l1_voltage}V {ac_l1_current}A | "
                 f"L2: {ac_l2_power}W {ac_l2_voltage}V {ac_l2_current}A | "
                 f"L3: {ac_l3_power}W {ac_l3_voltage}V {ac_l3_current}A | "
-                f"{grid_freq}Hz | Daily: {daily_energy}kWh"
+                f"{grid_freq}Hz | Daily: {daily_energy:.3f}kWh | "
+                f"Total: {total_energy:.1f}kWh | Hours: {operating_hours}"
             )
 
         except Exception:
