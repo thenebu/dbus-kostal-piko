@@ -2,6 +2,64 @@
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 SERVICE_NAME=$(basename "$SCRIPT_DIR")
 CONFIG_FILE="$SCRIPT_DIR/config.ini"
+UDEV_RULE_PATH="/etc/udev/rules.d/zz-dbus-kostal-piko.rules"
+UDEV_RULE_TEMPLATE="$SCRIPT_DIR/udev/zz-dbus-kostal-piko.rules.template"
+
+# ─────────────────────────────────────────────────────────────
+# Install udev rule that takes our RS485 adapter out of the
+# serial-starter rotation. Without this, Victron's serial-starter
+# probes 6 different drivers on every USB-RS485 port (cgwacs,
+# fzsonick, imt, modbus, gps, vedirect), each holding the port
+# for ~30s and clobbering our exclusive Modbus session.
+#
+# Args: $1 = device path (e.g. /dev/ttyUSB3)
+# ─────────────────────────────────────────────────────────────
+install_udev_rule() {
+    local dev="$1"
+    [ -z "$dev" ] && return 1
+    [ ! -e "$dev" ] && return 1
+    [ ! -f "$UDEV_RULE_TEMPLATE" ] && return 1
+
+    local info vendor_id model_id serial_short
+    info=$(udevadm info -q property -n "$dev" 2>/dev/null)
+    vendor_id=$(echo "$info"  | grep "^ID_VENDOR_ID="    | cut -d= -f2)
+    model_id=$(echo "$info"   | grep "^ID_MODEL_ID="     | cut -d= -f2)
+    serial_short=$(echo "$info" | grep "^ID_SERIAL_SHORT=" | cut -d= -f2)
+    if [ -z "$vendor_id" ] || [ -z "$model_id" ] || [ -z "$serial_short" ]; then
+        echo "  ! Konnte USB-IDs für $dev nicht ermitteln, überspringe udev-Regel."
+        return 1
+    fi
+
+    # Render template
+    local tmp
+    tmp=$(mktemp 2>/dev/null || echo "/tmp/zz-dbus-kostal-piko.rules.$$")
+    sed -e "s/@VENDOR_ID@/$vendor_id/g" \
+        -e "s/@MODEL_ID@/$model_id/g" \
+        -e "s/@SERIAL_SHORT@/$serial_short/g" \
+        "$UDEV_RULE_TEMPLATE" > "$tmp"
+
+    # Only write if changed (avoids spurious udev reloads on every boot)
+    if [ ! -f "$UDEV_RULE_PATH" ] || ! cmp -s "$tmp" "$UDEV_RULE_PATH"; then
+        cp "$tmp" "$UDEV_RULE_PATH"
+        chmod 644 "$UDEV_RULE_PATH"
+        udevadm control --reload-rules 2>/dev/null
+        udevadm trigger --action=add --subsystem-match=tty 2>/dev/null
+        echo "  ✓ udev-Regel installiert: $UDEV_RULE_PATH (Adapter $serial_short)"
+    fi
+    rm -f "$tmp"
+
+    # Stop all serial-starter probe services for this port; with the
+    # udev rule active they should not auto-start again.
+    local port_base
+    port_base=$(basename "$dev")
+    for svc_name in dbus-cgwacs dbus-fzsonick-48tl dbus-imt-si-rs485tc \
+                    dbus-modbus-client.serial gps-dbus vedirect-interface; do
+        local svc_path="/service/$svc_name.$port_base"
+        if [ -d "$svc_path" ]; then
+            svc -d "$svc_path" 2>/dev/null
+        fi
+    done
+}
 
 # ─────────────────────────────────────────────────────────────
 # If config.ini already exists → silent install (for rc.local)
@@ -14,18 +72,20 @@ if [ -f "$CONFIG_FILE" ] && [ "$1" != "--setup" ]; then
     chmod 755 "$SCRIPT_DIR/service/log/run" 2>/dev/null
     mkdir -p /var/log/$SERVICE_NAME
 
-    # Stop conflicting serial-starter service on our port
-    PORT=$(python3 -c "
-import configparser, os, sys
+    # Reinstall udev rule + stop serial-starter probes for our port.
+    # Needed on every boot because /etc/udev/rules.d/ is wiped by VenusOS
+    # firmware updates.
+    PORT_PATH=$(python3 -c "
+import configparser, sys
 c = configparser.ConfigParser()
 c.read('$CONFIG_FILE')
 try:
-    print(os.path.basename(c.get('MODBUS', 'port')))
+    print(c.get('MODBUS', 'port'))
 except:
     sys.exit(1)
 " 2>/dev/null)
-    if [ -n "$PORT" ] && [ -d "/service/dbus-modbus-client.serial.$PORT" ]; then
-        svc -d "/service/dbus-modbus-client.serial.$PORT" 2>/dev/null
+    if [ -n "$PORT_PATH" ]; then
+        install_udev_rule "$PORT_PATH"
     fi
 
     # Create/restart service
@@ -99,16 +159,16 @@ SELECTED_PORT="${PORTS[$PORT_SEL]}"
 echo "→ Using: $SELECTED_PORT"
 echo ""
 
-# Stop any service using this port so we can probe
+# Stop our own service and all serial-starter probes on this port so we
+# can probe the inverter without contention. Also installs the udev rule
+# right away so newly arriving "add" events don't trigger probes again.
 PORT_BASE=$(basename "$SELECTED_PORT")
 if [ -L "/service/$SERVICE_NAME" ]; then
     svc -d "/service/$SERVICE_NAME" 2>/dev/null
     sleep 1
 fi
-if [ -d "/service/dbus-modbus-client.serial.$PORT_BASE" ]; then
-    svc -d "/service/dbus-modbus-client.serial.$PORT_BASE" 2>/dev/null
-    sleep 1
-fi
+install_udev_rule "$SELECTED_PORT"
+sleep 1
 
 # ── 2. Modbus Slave Address ─────────────────────────────────
 echo "── Modbus Einstellungen ───────────────────────────"
@@ -354,12 +414,9 @@ if [ ! -f "$SCRIPT_DIR/ext/velib_python/vedbus.py" ]; then
     fi
 fi
 
-# Stop conflicting serial-starter service
-PORT_BASE=$(basename "$SELECTED_PORT")
-if [ -d "/service/dbus-modbus-client.serial.$PORT_BASE" ]; then
-    echo "Stoppe konfliktierenden dbus-modbus-client auf $PORT_BASE..."
-    svc -d "/service/dbus-modbus-client.serial.$PORT_BASE" 2>/dev/null
-fi
+# Take the port out of serial-starter rotation and stop all probe services
+echo "Konfiguriere udev-Regel für exklusive Portnutzung..."
+install_udev_rule "$SELECTED_PORT"
 
 # Create service symlink
 if [ ! -L "/service/$SERVICE_NAME" ]; then

@@ -19,5 +19,14 @@ else
     echo "Service not found."
 fi
 
+# Remove udev rule so serial-starter resumes management of the port
+UDEV_RULE_PATH="/etc/udev/rules.d/zz-dbus-kostal-piko.rules"
+if [ -f "$UDEV_RULE_PATH" ]; then
+    rm -f "$UDEV_RULE_PATH"
+    udevadm control --reload-rules 2>/dev/null
+    udevadm trigger --action=add --subsystem-match=tty 2>/dev/null
+    echo "udev rule removed."
+fi
+
 echo "Uninstall complete."
 echo "Optionally remove $SCRIPT_DIR manually."

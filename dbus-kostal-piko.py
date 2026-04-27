@@ -149,7 +149,7 @@ class KostalPikoService:
 
         # Management paths
         self._dbusservice.add_path("/Mgmt/ProcessName", __file__)
-        self._dbusservice.add_path("/Mgmt/ProcessVersion", "1.4.2-thenebu")
+        self._dbusservice.add_path("/Mgmt/ProcessVersion", "1.4.3-thenebu")
         self._dbusservice.add_path("/Mgmt/Connection", f"Modbus RTU {SERIAL_PORT} @{SLAVE_ADDR}")
 
         # Mandatory paths
@@ -158,7 +158,7 @@ class KostalPikoService:
         self._dbusservice.add_path("/ProductName", device_name)
         self._dbusservice.add_path("/CustomName", device_name)
         self._dbusservice.add_path("/Serial", serial_number)
-        self._dbusservice.add_path("/FirmwareVersion", "1.4.2-thenebu")
+        self._dbusservice.add_path("/FirmwareVersion", "1.4.3-thenebu")
         self._dbusservice.add_path("/Connected", 1)
         self._dbusservice.add_path("/Latency", None)
         self._dbusservice.add_path("/ErrorCode", 0)

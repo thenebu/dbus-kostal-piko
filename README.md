@@ -273,10 +273,22 @@ Check logs: `cat /var/log/dbus-kostal-piko/current | tai64nlocal`
 - Is another service using the port? `fuser /dev/ttyUSB3`
 
 **serial-starter claims the port:**
-The install script stops the conflicting service automatically. If it doesn't work:
+On install, an udev rule (`/etc/udev/rules.d/zz-dbus-kostal-piko.rules`)
+is written that sets `VE_SERVICE=ignore` for our specific RS485 adapter
+(matched by USB serial number). This takes the port out of Victron's
+serial-starter rotation, which would otherwise cycle 6 different driver
+probes (cgwacs, fzsonick, imt, modbus, gps, vedirect) on every USB-RS485
+port and clobber our exclusive Modbus session.
+
+The rule is re-applied on every boot via `/data/rc.local` because
+VenusOS firmware updates wipe `/etc/udev/rules.d/`.
+
+If you ever need to manually stop the leftover services:
 ```bash
-# Manually stop the conflicting service
-svc -d /service/dbus-modbus-client.serial.ttyUSB3
+for svc in dbus-cgwacs dbus-fzsonick-48tl dbus-imt-si-rs485tc \
+           dbus-modbus-client.serial gps-dbus vedirect-interface; do
+    svc -d "/service/$svc.ttyUSB3" 2>/dev/null
+done
 ```
 
 **Per-phase energy is synthetic:**

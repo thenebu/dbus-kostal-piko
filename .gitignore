@@ -3,3 +3,5 @@ ext/
 __pycache__/
 *.pyc
 /var/
+.DS_Store
+**/.DS_Store
