@@ -52,6 +52,8 @@ try:
     POLL_INTERVAL = config.getint("DEFAULT", "poll_interval", fallback=1000)
     CONNECT_RETRY_BASE = config.getfloat("DEFAULT", "connect_retry_base", fallback=max(1.0, POLL_INTERVAL / 1000.0))
     CONNECT_RETRY_MAX = config.getfloat("DEFAULT", "connect_retry_max", fallback=60.0)
+    RECONNECT_AFTER_ERRORS = config.getint("DEFAULT", "reconnect_after_errors", fallback=15)
+    STALE_THRESHOLD = config.getfloat("DEFAULT", "stale_threshold", fallback=60.0)
 except (ValueError, configparser.Error) as e:
     logging.error(f"Invalid config.ini: {e}")
     time.sleep(60)
@@ -76,6 +78,12 @@ if CONNECT_RETRY_MAX < CONNECT_RETRY_BASE:
     logging.error(
         f"Invalid connect_retry_max: {CONNECT_RETRY_MAX} (must be >= connect_retry_base={CONNECT_RETRY_BASE})"
     )
+    sys.exit(1)
+if RECONNECT_AFTER_ERRORS < 1:
+    logging.error(f"Invalid reconnect_after_errors: {RECONNECT_AFTER_ERRORS} (must be >= 1)")
+    sys.exit(1)
+if STALE_THRESHOLD <= 0:
+    logging.error(f"Invalid stale_threshold: {STALE_THRESHOLD} (must be > 0)")
     sys.exit(1)
 
 
@@ -136,10 +144,12 @@ class KostalPikoService:
         self._error_count = 0
         self._connect_failures = 0
         self._next_connect_ts = 0.0
+        self._last_good_read_ts = time.monotonic()
+        self._stale = False
 
         # Management paths
         self._dbusservice.add_path("/Mgmt/ProcessName", __file__)
-        self._dbusservice.add_path("/Mgmt/ProcessVersion", "1.4.1-thenebu")
+        self._dbusservice.add_path("/Mgmt/ProcessVersion", "1.4.2-thenebu")
         self._dbusservice.add_path("/Mgmt/Connection", f"Modbus RTU {SERIAL_PORT} @{SLAVE_ADDR}")
 
         # Mandatory paths
@@ -148,7 +158,7 @@ class KostalPikoService:
         self._dbusservice.add_path("/ProductName", device_name)
         self._dbusservice.add_path("/CustomName", device_name)
         self._dbusservice.add_path("/Serial", serial_number)
-        self._dbusservice.add_path("/FirmwareVersion", "1.4.1-thenebu")
+        self._dbusservice.add_path("/FirmwareVersion", "1.4.2-thenebu")
         self._dbusservice.add_path("/Connected", 1)
         self._dbusservice.add_path("/Latency", None)
         self._dbusservice.add_path("/ErrorCode", 0)
@@ -212,7 +222,19 @@ class KostalPikoService:
         self._dbusservice["/Ac/Energy/Forward"] = None
         self._dbusservice["/Ac/Energy/Day"] = None
         self._dbusservice["/HoursOfOperation"] = None
-        self._dbusservice["/StatusCode"] = 0
+        self._dbusservice["/Connected"] = 0
+        # 10 = Error (per Victron pvinverter status codes). Avoid 0 (Inbetriebnahme),
+        # which is more alarming and shown by gui-v2 even for transient blips.
+        self._dbusservice["/StatusCode"] = 10
+        self._stale = True
+
+    def _maybe_invalidate_stale(self):
+        """Invalidate dbus values only after readings have been stale longer than threshold."""
+        if self._stale:
+            return
+        if time.monotonic() - self._last_good_read_ts > STALE_THRESHOLD:
+            logging.warning(f"No valid Modbus data for {STALE_THRESHOLD}s — marking values stale")
+            self._invalidate()
 
     def _schedule_connect_retry(self):
         failures = min(self._connect_failures, 6)
@@ -229,10 +251,11 @@ class KostalPikoService:
                 logging.warning("Error closing Modbus client during reconnect")
         self._client = None
         self._error_count = 0
-        self._dbusservice["/Connected"] = 0
-        self._invalidate()
         self._connect_failures += 1
         self._schedule_connect_retry()
+        # Don't invalidate here — keep last-known values visible.
+        # _maybe_invalidate_stale will clear them only if the outage exceeds STALE_THRESHOLD.
+        self._maybe_invalidate_stale()
 
     def _ensure_connection(self):
         if self._client is not None:
@@ -254,27 +277,31 @@ class KostalPikoService:
     def _poll(self):
         try:
             if not self._ensure_connection():
-                self._dbusservice["/Connected"] = 0
+                self._maybe_invalidate_stale()
                 return True
 
             # Read registers 30001-30056 (address 30000-30055, count=56)
             result = read_holding_registers(self._client, 30001 - 1, 56)
 
-            if result is None or result.isError():
+            valid = (
+                result is not None
+                and not result.isError()
+                and hasattr(result, "registers")
+                and len(result.registers) >= 56
+            )
+
+            if not valid:
                 self._error_count += 1
                 logging.warning(f"Modbus read error ({self._error_count}): {result}")
-                if self._error_count >= 5:
+                if self._error_count >= RECONNECT_AFTER_ERRORS:
                     self._reconnect()
-                return True
-
-            if not hasattr(result, 'registers') or len(result.registers) < 56:
-                logging.warning(f"Incomplete response: got {len(getattr(result, 'registers', []))} registers, expected 56")
-                self._error_count += 1
-                if self._error_count >= 5:
-                    self._reconnect()
+                else:
+                    self._maybe_invalidate_stale()
                 return True
 
             self._error_count = 0
+            self._last_good_read_ts = time.monotonic()
+            self._stale = False
             self._dbusservice["/Connected"] = 1
             regs = result.registers
 
@@ -360,8 +387,10 @@ class KostalPikoService:
         except Exception:
             logging.exception("Unexpected error in poll cycle")
             self._error_count += 1
-            if self._error_count >= 5:
+            if self._error_count >= RECONNECT_AFTER_ERRORS:
                 self._reconnect()
+            else:
+                self._maybe_invalidate_stale()
 
         return True
 
